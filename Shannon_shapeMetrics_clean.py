@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Created on Mon May 15 14:59:38 2017
-
+Last edit on June 9 
 @author: Chen
 """
 # looking for: shape metrics, cell count, viability (we have other images with Hoescht/PI), 
