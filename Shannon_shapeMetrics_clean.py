@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Created on Mon May 15 14:59:38 2017
-Last edit on June 9 
+
 @author: Chen
 """
 # looking for: shape metrics, cell count, viability (we have other images with Hoescht/PI), 
@@ -33,7 +33,6 @@ Last edit on June 9
 #     6. bad example: /Users/Admin/Desktop/Shannon_images/3-23-17/dev2_5PEG_SM_-6 (bad dapi ws)
 #                     /Users/Admin/Desktop/Shannon_images/03-03-2017/device2 (bad channel segmentation due to background light)
 #     7. intermediate example: /Users/Admin/Desktop/Shannon_images/3-23-17/dev13_2PEG_SM_-10 
-
 #%% ----- LOAD MODULES -----
 import os
 import fnmatch 
@@ -41,15 +40,13 @@ import re
 import numpy as np
 import pandas as pd
 from shutil import copy
-from skimage import draw
 from matplotlib import pyplot as plt
-from skimage.filters import threshold_otsu, sobel_h, try_all_threshold, threshold_mean, threshold_li
+from skimage.filters import threshold_otsu, sobel_h, threshold_li, threshold_yen, try_all_threshold
 from skimage import io, filters
-from skimage.morphology import ball,square, binary_closing, remove_small_holes, binary_dilation, erosion, closing, watershed, remove_small_objects, rectangle, skeletonize
-from skimage.measure import label, regionprops, find_contours
-from skimage.transform import hough_line, probabilistic_hough_line
+from skimage.morphology import remove_small_holes, binary_dilation, erosion, closing, watershed, remove_small_objects, rectangle
+from skimage.measure import label, regionprops
 from scipy import ndimage as ndi
-from skimage.feature import corner_peaks, peak_local_max, canny
+from skimage.feature import corner_peaks
 from skimage.color import rgb2gray
 
 #%% 
@@ -84,13 +81,15 @@ class Image:
         match_device_number = re.search('dev(\d+)',name) or re.search('device\ *(\d+)',name)
         if match_device_number:                      
             self.device_number = match_device_number.group(1)           
-        match_position = re.search('top|tp|bot|bt',name)
+        match_position = re.search('top_repeat|bot_repeat|top|tp|bot|bt|bottom|mid|middle',name)
         if match_position:                      
             self.position = match_position.group()
             if self.position == 'tp':
                 self.position = 'top'
-            if self.position == 'bt':
-                self.position = 'bot'    
+            if self.position == 'bt' or self.position == 'bottom':
+                self.position = 'bot'
+            if self.position == 'middle':
+                self.position = 'mid'
         else:
             self.position = 'top'
 
@@ -131,7 +130,6 @@ def group_images(images_df):
     dp = []
     gfp = []
     tr = []
-
     for expt in images_df.Expt_Date.unique():
         for dev in images_df.Device_Number.unique():
                 for expt_condition in images_df.Condition.unique():
@@ -162,7 +160,6 @@ def group_images(images_df):
                                 tr.append(images_df.Path[tr_entry.index[0]])
                             else:
                                 tr.append('na')
-
     groups_df.Expt_Date = expt_date
     groups_df.Device_Number = device_number
     groups_df.Condition = condition
@@ -172,6 +169,23 @@ def group_images(images_df):
     groups_df.GFP = gfp
     groups_df.TxRed = tr
     return groups_df
+    
+#%% 
+def clean_groups(groups_df):
+    cleaned_groups = groups_df.copy()
+    rows_to_delete = []
+    for index, row in cleaned_groups.iterrows():
+        bf, dp, gfp = str(row[4]), str(row[5]),str(row[6])
+        if len(bf) == 2 or len(dp) == 2 or len(gfp) == 2:
+            rows_to_delete.append(index)
+    cleaned_groups = cleaned_groups.drop(rows_to_delete).reset_index(drop=True)
+    return cleaned_groups
+    
+#%%
+def random_colors():
+    np.random.seed(20150929)
+    colors = np.random.randint(511, size= 2000)
+    return colors    
     
 #%% 
 def crop_out_scalebar(bf):
@@ -206,10 +220,12 @@ def crop_out_scalebar(bf):
 #%%
 def identify_lanes(bf_img, bf_cropped):
     bf_sobel_h = sobel_h(bf_cropped)
-    if len(bf_img.shape) == 3:
-        bf_sobel_h_threshold = threshold_otsu(bf_sobel_h)
-    else:
-        bf_sobel_h_threshold = threshold_li(bf_sobel_h)
+#    fig, ax = try_all_threshold(bf_sobel_h, figsize=(15,12), verbose=False)
+#    plt.show()
+#    if len(bf_img.shape) == 3:
+#        bf_sobel_h_threshold = threshold_otsu(bf_sobel_h)
+#    else:
+    bf_sobel_h_threshold = threshold_li(bf_sobel_h)
     bf_thresholded = bf_sobel_h > bf_sobel_h_threshold
     bf_closed = closing(bf_thresholded, rectangle(10,20))
     bf_dilated = binary_dilation(bf_closed)
@@ -231,37 +247,34 @@ def identify_lanes(bf_img, bf_cropped):
                     [x,y] = coord
                     lane_mask[x,y] = mask_label
             mask_label += 1
-            
-    return lane_mask, row, col
+    lane_binary_mask = lane_mask > 0        
+    return lane_mask,lane_binary_mask,  row, col
     
 #%%
-def make_dp_mask(dp, crop_position, crop_max_x, crop_min_x):
+def make_dp_mask(dp, lane_binary_mask, crop_position, crop_max_x, crop_min_x):
     dp_img = io.imread(input_path + '/' + dp)   
     dp_gray_for_crop = rgb2gray(dp_img)
-
     if crop_position == 'top':
         dp_cropped = dp_gray_for_crop[int(crop_max_x):960,0:1280]  
     elif crop_position == 'bottom':
         dp_cropped = dp_gray_for_crop[0:int(crop_min_x),0:1280]
     else:
         dp_cropped = dp_gray_for_crop
-
     dp_eroded = erosion(dp_cropped)
     dp_eroded_threshold  = filters.threshold_li(dp_eroded) 
     dp_mask = dp_cropped > dp_eroded_threshold
     dp_threshold  = filters.threshold_li(dp_cropped) 
     dp_mask = dp_cropped > dp_threshold
 
-    # ----- WATERSHED NUCLEI -----
     dp_distance = ndi.distance_transform_edt(dp_mask) 
     dp_local_max = corner_peaks(dp_distance, indices=False, labels=dp_mask, min_distance=10)
     dp_watershed_markers = ndi.label(dp_local_max)[0]
     dp_ws = watershed(-dp_distance,dp_watershed_markers, mask=dp_mask)
- 
-    return dp_cropped, dp_ws
+    dp_ws_lane_masked = lane_binary_mask * dp_ws 
+    return dp_cropped, dp_ws_lane_masked
 
 #%% 
-def make_gfp_mask(gfp, crop_position, crop_max_x, crop_min_x, dp_ws):    
+def make_gfp_mask(gfp, lane_binary_mask, crop_position, crop_max_x, crop_min_x, dp_ws):    
     gfp_img = io.imread(input_path + '/' + gfp)   
     gfp_gray_for_crop = rgb2gray(gfp_img)
     if crop_position == 'top':
@@ -270,15 +283,17 @@ def make_gfp_mask(gfp, crop_position, crop_max_x, crop_min_x, dp_ws):
         gfp_cropped = gfp_gray_for_crop[0:int(crop_min_x),0:1280]
     else:
         gfp_cropped = gfp_gray_for_crop
-
     gfp_threshold = filters.threshold_yen(gfp_cropped) 
     gfp_mask = gfp_cropped > gfp_threshold
-    gfp_distance = ndi.distance_transform_edt(gfp_mask) 
-    gfp_ws = watershed(-gfp_distance, dp_ws, mask=gfp_mask)
-
-    return gfp_cropped, gfp_ws
+    if len(np.unique(gfp_mask)) != 1:
+        gfp_distance = ndi.distance_transform_edt(gfp_mask) 
+        gfp_ws = watershed(-gfp_distance, dp_ws, mask=gfp_mask)
+    else:
+        gfp_ws = np.zeros([row, col],dtype = bool)
+    gfp_ws_lane_masked = lane_binary_mask * gfp_ws 
+    return gfp_cropped, gfp_ws_lane_masked
 #%% 
-def make_tr_mask(tr, crop_position, crop_max_x, crop_min_x):
+def make_tr_mask(tr, lane_binary_mask, crop_position, crop_max_x, crop_min_x):
     tr_img = io.imread(input_path + '/' + tr)   
     tr_gray_for_crop = rgb2gray(tr_img)
     if crop_position == 'top':
@@ -287,17 +302,15 @@ def make_tr_mask(tr, crop_position, crop_max_x, crop_min_x):
         tr_cropped = tr_gray_for_crop[0:int(crop_min_x),0:1280]
     else:
         tr_cropped = tr_gray_for_crop
-    tr_threshold  = filters.threshold_triangle(tr_cropped) 
+    tr_threshold  = filters.threshold_yen(tr_cropped) 
     tr_mask = tr_cropped > tr_threshold
-    tr_clean = remove_small_objects(tr_mask, min_size=5)
-    return tr_cropped, tr_clean
-    
-#%%
-def random_colors():
-    np.random.seed(20150929)
-    colors = np.random.randint(511, size= 2000)
-    return colors
-    
+    if len(np.unique(tr_mask)) != 1:
+        tr_clean = remove_small_objects(tr_mask, min_size=5)
+    else:
+        tr_clean = np.zeros([row, col],dtype = bool)        
+    tr_clean_lane_masked = lane_binary_mask * tr_clean
+    return tr_cropped, tr_clean_lane_masked
+
 #%% ----- demo on small region -----
 def demo_zoom(demo_image_full_path, bf_cropped, dp_cropped, gfp_cropped, tr_cropped, lane_mask, dp_ws, gfp_ws, tr_clean):    
     fig,(ax) = plt.subplots(ncols=4, nrows=3, figsize=(20,15))
@@ -309,7 +322,7 @@ def demo_zoom(demo_image_full_path, bf_cropped, dp_cropped, gfp_cropped, tr_crop
     sub2.title.set_text('lane_mask')
     sub3 = plt.subplot(4,3,3)
     sub3.imshow(lane_mask)
-    sub3.set_ylim([200, 400])
+    sub3.set_ylim([400, 200])
     sub3.set_xlim([500, 700])
     sub3.title.set_text('lane_mask_zoom')    
     
@@ -321,7 +334,7 @@ def demo_zoom(demo_image_full_path, bf_cropped, dp_cropped, gfp_cropped, tr_crop
     sub5.title.set_text('dp_ws')
     sub6 = plt.subplot(4,3,6)
     sub6.imshow(dp_ws)
-    sub6.set_ylim([200, 400])
+    sub6.set_ylim([400, 200])
     sub6.set_xlim([500, 700])
     sub6.title.set_text('dp_ws_zoom') 
     
@@ -333,7 +346,7 @@ def demo_zoom(demo_image_full_path, bf_cropped, dp_cropped, gfp_cropped, tr_crop
     sub8.title.set_text('gfp_ws')
     sub9 = plt.subplot(4,3,9)
     sub9.imshow(gfp_ws)
-    sub9.set_ylim([200, 400])
+    sub9.set_ylim([400, 200])
     sub9.set_xlim([500, 700])
     sub9.title.set_text('gfp_ws_zoom') 
     
@@ -345,13 +358,13 @@ def demo_zoom(demo_image_full_path, bf_cropped, dp_cropped, gfp_cropped, tr_crop
     sub11.title.set_text('tr_clean')
     sub12 = plt.subplot(4,3,12)
     sub12.imshow(tr_clean)
-    sub12.set_ylim([200, 400])
+    sub12.set_ylim([400, 200])
     sub12.set_xlim([500, 700])
     sub12.title.set_text('tr_clean_zoom') 
     
     fig.tight_layout()
     plt.savefig(demo_image_full_path)
-    plt.close(demo_image_full_path)
+    plt.close()
     
 #%% ----- generate cell metrics -----
 def generate_df(lane_mask, row, col, dp_ws,gfp_ws, dp_cropped, gfp_cropped,tr_clean):
@@ -398,7 +411,7 @@ def generate_df(lane_mask, row, col, dp_ws,gfp_ws, dp_cropped, gfp_cropped,tr_cl
                         dead_cell.append(False)
                 else:
                     dead_cell.append('na')
-            for region in regionprops(gfp_in_lane, gfp_in_lane_greyscale):
+            for region in regionprops(gfp_in_lane.astype(int), gfp_in_lane_greyscale):
                 gfp_area.append(region.area)
                 gfp_mean_intensity.append(region.mean_intensity)
                 gfp_major_axis_length.append(region.major_axis_length)
@@ -423,7 +436,6 @@ def generate_df(lane_mask, row, col, dp_ws,gfp_ws, dp_cropped, gfp_cropped,tr_cl
                         dead_cell.append(False)
                 else:
                     dead_cell.append('na')
-
     results_df.Lane_Number = lane_number
     results_df.Lane_Size = lane_size
     results_df.Dapi_Label = dapi_label
@@ -437,35 +449,54 @@ def generate_df(lane_mask, row, col, dp_ws,gfp_ws, dp_cropped, gfp_cropped,tr_cl
     results_df.GFP_Minor_Axis_Length = gfp_minor_axis_length    
     results_df.Dead_Cell = dead_cell    
     return results_df
-    
+#%% ----- testing -----
+# good one
+#bf = '3-31-2017_cryostage/dev8/postfreeze-10x-bfbot-8.tif'
+#dp = '3-31-2017_cryostage/dev8/postfreeze-10x-dpbot-8.tif'
+#tr = '3-31-2017_cryostage/dev8/postfreeze-10x-trbot-8.tif'
+#gfp = '3-31-2017_cryostage/dev8/postfreeze-10x-gfpbot-8.tif'    
+
+# bad ones
+#bf = '3-23-17/dev3_SM_-6/postfreeze-10x-bftop-3.tif'
+#dp = '3-23-17/dev3_SM_-6/postfreeze-10x-dptop-3.tif'
+#tr = '3-23-17/dev3_SM_-6/postfreeze-10x-trtop-3.tif'
+#gfp = '3-23-17/dev3_SM_-6/postfreeze-10x-gfptop-3.tif'
+#
+#
+#bf = '03-03-2017/device3/postfreeze-10xbottom-bf-3.tif'
+#dp = '03-03-2017/device3/postfreeze-10xbottom-dp-3.tif'
+#tr = '03-03-2017/device3/postfreeze-10xbottom-tr-3.tif'
+#gfp = '03-03-2017/device3/postfreeze-10xbottom-gfp-3.tif'
+
 #%% ----- batch processing images -----
-def process_images(groups_df):
-    for index, row in groups_df.iterrows():
+def process_images(cleaned_groups):
+    for index, row in cleaned_groups.iterrows():
         bf, dp, gfp, tr = str(row[4]), str(row[5]),str(row[6]),str(row[7])
         image_position = row[3]
         image_condition = row[2]
         print 'working on', bf
-        if len(bf) > 2 and len(dp) > 2 and len(gfp) > 2:
-            bf_img, bf_cropped, crop_position, crop_max_x, crop_min_x = crop_out_scalebar(bf)
-            lane_mask, row, col = identify_lanes(bf_img, bf_cropped)
-            dp_cropped, dp_ws = make_dp_mask(dp, crop_position, crop_max_x, crop_min_x)
-            gfp_cropped, gfp_ws = make_gfp_mask(gfp, crop_position, crop_max_x, crop_min_x, dp_ws)
-            working_directory = os.path.dirname(bf)
-            demo_image_full_path = input_path + '/' + working_directory + '/'+ image_condition + '_' + image_position + '_demo.png'
-            csv_full_path = input_path + '/' + working_directory + '/'+ image_condition + '_' + image_position + '_results_df.csv'
-            if len(tr) > 2:
-                tr_cropped, tr_clean = make_tr_mask(tr, crop_position, crop_max_x, crop_min_x)
-            else:
-                tr_cropped = 'na'
-                tr_clean = 'na'
-            results_df = generate_df(lane_mask, row, col, dp_ws,gfp_ws, dp_cropped, gfp_cropped, tr_clean)
-            demo_zoom(demo_image_full_path, bf_cropped, dp_cropped, gfp_cropped, tr_cropped, lane_mask, dp_ws, gfp_ws, tr_clean)
-            print 'generating', csv_full_path
-            results_df.to_csv(csv_full_path)
+        bf_img, bf_cropped, crop_position, crop_max_x, crop_min_x = crop_out_scalebar(bf)
+        lane_mask, lane_binary_mask, row, col = identify_lanes(bf_img, bf_cropped)
+        dp_cropped, dp_ws_lane_masked = make_dp_mask(dp, lane_binary_mask, crop_position, crop_max_x, crop_min_x)
+        gfp_cropped, gfp_ws_lane_masked = make_gfp_mask(gfp, lane_binary_mask, crop_position, crop_max_x, crop_min_x, dp_ws_lane_masked)
+        working_directory = os.path.dirname(bf)
+        demo_image_full_path = input_path + '/' + working_directory + '/'+ image_condition + '_' + image_position + '_demo.png'
+        csv_full_path = input_path + '/' + working_directory + '/'+ image_condition + '_' + image_position + '_results_df.csv'
+        if len(tr) > 2:
+            tr_cropped, tr_clean_lane_masked = make_tr_mask(tr, lane_binary_mask, crop_position, crop_max_x, crop_min_x)
+        else:
+            tr_cropped = np.ones([row, col],dtype = bool)
+            tr_clean_lane_masked = np.ones([row, col],dtype = bool)
+        results_df = generate_df(lane_mask, row, col, dp_ws_lane_masked,gfp_ws_lane_masked, dp_cropped, gfp_cropped, tr_clean_lane_masked)
+        demo_zoom(demo_image_full_path, bf_cropped, dp_cropped, gfp_cropped, tr_cropped, lane_mask, dp_ws_lane_masked, gfp_ws_lane_masked, tr_clean_lane_masked)
+        print 'generating', csv_full_path
+        results_df.to_csv(csv_full_path)
             
+#%% ----- create a repository where we can view all processed images in one folder        
 def pool_demo_images(input_path):
     demo_images_list = []
-    for root, dirs, files in os.walk(input_path):
+    for root, dirs, files in os.walk(input_path, topdown=True):
+        dirs[:] = [d for d in dirs if d not in input_path + 'images_pool']
         for file in files:
             if fnmatch.fnmatch(file, '*.png'):
                 rel_file_path = os.path.relpath(os.path.join(root, file), input_path)
@@ -474,13 +505,13 @@ def pool_demo_images(input_path):
                 dst_name = input_path + '/images_pool/' + rel_file_path.replace('/', '_')
                 copy(src_name, dst_name)
                 
-
 #%% ----- MAIN -----
-input_path = '/Users/Admin/Desktop/Shannon_images_20170609'
+input_path = '/Users/Admin/Desktop/Shannon_images_20170612'
 images_list = get_10x_images(input_path)
 images_df = sort(images_list)
-colors = random_colors()
 groups_df = group_images(images_df)
-process_images(groups_df)
+cleaned_groups = clean_groups(groups_df)
+colors = random_colors()
+process_images(cleaned_groups)
 pool_demo_images(input_path)
 print 'done!' 
