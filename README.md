@@ -12,7 +12,7 @@ Workflow:
 7. count dead cells based on colocaliation of dapi mask and red cells (viability)
 8. batch process images 
 9. manually go through the processed images and take out the ones that are poorly processed and unfit for further data analysis
-10. combine individual images' data 
+10. combine individual images' data ("Endothelial_Microchannels-snt_copy.xlsx")
 11. sort images into groups based on treatment (for sorting procedure, please see "Microvessel_grouping.png")
 12. plot data (total cell numbers, percentage of dead cells, and average GFP intensity per cell) based on the groupings 
 
