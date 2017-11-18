@@ -9,6 +9,7 @@ Created on Mon May 15 14:59:38 2017
 import os
 # 2.5 you want to uncomment the following line if you are running the script on a server, for example Partnes Erisone cluster
 #os.environ['QT_QPA_PLATFORM']='offscreen'from skimage import io
+from skimage import io
 import fnmatch 
 import time
 import re
